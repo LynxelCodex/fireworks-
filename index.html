@@ -103,6 +103,9 @@
   const fireworks = [];
   const pendingSpreads = []; // queued secondary booms
 
+  /* ── Trajectory types ── */
+  const trajectoryTypes = ['snake','spiral','wander'];
+
   function spawnRocket(tx, ty){
     const roll = Math.random();
     const sizeKey = roll < 0.4 ? 'small' : (roll < 0.75 ? 'medium' : 'huge');
@@ -110,8 +113,29 @@
     const startX = tx + (Math.random()*60 - 30);
     const startY = H + 10;
     const family = pickFamily();
-    // speed scaled so travel time feels like a real rocket ~ 0.9 - 1.4s
-    const duration = 130 + Math.random()*60;
+
+    const traj = trajectoryTypes[Math.floor(Math.random() * trajectoryTypes.length)];
+
+    // trajectory-specific params
+    const trajData = {};
+    if(traj === 'snake'){
+      trajData.amplitude = 40 + Math.random() * 80;       // how wide the weave
+      trajData.frequency = 2 + Math.random() * 4;          // how many wiggles
+      trajData.phase = Math.random() * Math.PI * 2;
+    } else if(traj === 'spiral'){
+      trajData.radius = 30 + Math.random() * 60;
+      trajData.spins = 1.5 + Math.random() * 3;
+      trajData.dir = Math.random() < 0.5 ? 1 : -1;        // CW or CCW
+    } else { // wander
+      trajData.wx = startX;
+      trajData.wy = startY;
+      trajData.vx = (Math.random() - 0.5) * 4;
+      trajData.vy = -(2 + Math.random() * 3);              // mostly upward
+      trajData.steerStrength = 0.04 + Math.random() * 0.04;
+      trajData.jitter = 0.8 + Math.random() * 0.6;
+    }
+
+    const duration = 140 + Math.random() * 70;
     rockets.push({
       x: startX, y: startY,
       tx, ty,
@@ -121,7 +145,10 @@
       cfg,
       family,
       color: pickColor(family),
-      trail: []
+      trail: [],
+      traj,
+      trajData,
+      sparks: []
     });
   }
 
@@ -195,15 +222,78 @@
       const rk = rockets[r];
       rk.frame++;
       const t = Math.min(1, rk.frame / rk.duration);
+
+      // base straight-line position (eased)
       const ease = 1 - Math.pow(1-t, 2);
-      rk.x = rk.startX + (rk.tx - rk.startX) * ease;
-      rk.y = rk.startY + (rk.ty - rk.startY) * ease;
+      const baseX = rk.startX + (rk.tx - rk.startX) * ease;
+      const baseY = rk.startY + (rk.ty - rk.startY) * ease;
+
+      if(rk.traj === 'snake'){
+        // sinusoidal weave perpendicular to travel direction
+        const d = rk.trajData;
+        const angle = Math.atan2(rk.ty - rk.startY, rk.tx - rk.startX);
+        const perpX = -Math.sin(angle);
+        const perpY = Math.cos(angle);
+        const wave = Math.sin(t * d.frequency * Math.PI * 2 + d.phase) * d.amplitude * (1 - t * 0.6);
+        rk.x = baseX + perpX * wave;
+        rk.y = baseY + perpY * wave;
+      } else if(rk.traj === 'spiral'){
+        const d = rk.trajData;
+        const spiralAngle = t * d.spins * Math.PI * 2 * d.dir;
+        const r2 = d.radius * (1 - t * 0.7); // spiral tightens near target
+        rk.x = baseX + Math.cos(spiralAngle) * r2;
+        rk.y = baseY + Math.sin(spiralAngle) * r2;
+      } else { // wander
+        const d = rk.trajData;
+        // steer gently toward target
+        const dx = rk.tx - d.wx;
+        const dy = rk.ty - d.wy;
+        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        // increase steering as we get closer to deadline
+        const urgency = Math.pow(t, 2) * 2 + d.steerStrength;
+        d.vx += (dx / dist) * urgency + (Math.random() - 0.5) * d.jitter;
+        d.vy += (dy / dist) * urgency + (Math.random() - 0.5) * d.jitter;
+        // dampen a bit
+        const speed = Math.sqrt(d.vx*d.vx + d.vy*d.vy);
+        const maxSpd = 5 + t * 4;
+        if(speed > maxSpd){ d.vx *= maxSpd/speed; d.vy *= maxSpd/speed; }
+        d.wx += d.vx;
+        d.wy += d.vy;
+        // near the end, blend toward the target so we always arrive
+        const blend = Math.pow(Math.max(0, (t - 0.7) / 0.3), 2);
+        rk.x = d.wx * (1 - blend) + rk.tx * blend;
+        rk.y = d.wy * (1 - blend) + rk.ty * blend;
+      }
+
+      // emit sparks
+      if(Math.random() < 0.4){
+        rk.sparks.push({
+          x: rk.x, y: rk.y,
+          vx: (Math.random()-0.5)*3,
+          vy: (Math.random()-0.5)*3 + 1,
+          life: 1,
+          color: rk.color
+        });
+      }
+      // update & draw sparks
+      for(let si = rk.sparks.length - 1; si >= 0; si--){
+        const sp = rk.sparks[si];
+        sp.x += sp.vx; sp.y += sp.vy;
+        sp.vy += 0.05; // gravity
+        sp.life -= 0.05;
+        if(sp.life <= 0){ rk.sparks.splice(si, 1); continue; }
+        ctx.globalAlpha = sp.life * 0.7;
+        ctx.fillStyle = sp.color;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 1, 0, Math.PI*2);
+        ctx.fill();
+      }
 
       rk.trail.push({x: rk.x, y: rk.y, life: 1});
-      if(rk.trail.length > 18) rk.trail.shift();
+      if(rk.trail.length > 30) rk.trail.shift();
 
       for(const tp of rk.trail){
-        tp.life -= 0.06;
+        tp.life -= 0.04;
         if(tp.life <= 0) continue;
         ctx.globalAlpha = Math.max(0, tp.life);
         ctx.fillStyle = rk.color;
@@ -213,7 +303,7 @@
       }
       ctx.globalAlpha = 1;
 
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = 12;
       ctx.shadowColor = rk.color;
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
