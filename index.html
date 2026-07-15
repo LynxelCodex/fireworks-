@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Heart Fireworks — click to launch</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    overflow: hidden;
+    font-family: sans-serif;
+  }
+  #hint {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.6);
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    pointer-events: none;
+    z-index: 2;
+    transition: opacity 1s ease;
+  }
+  canvas {
+    display: block;
+    position: fixed;
+    top: 0;
+    left: 0;
+    cursor: crosshair;
+  }
+</style>
+</head>
+<body>
+<div id="hint">click anywhere — watch the rocket climb before it booms into a heart</div>
+<canvas id="fwcanvas"></canvas>
+
+<script>
+(function(){
+  const canvas = document.getElementById('fwcanvas');
+  const ctx = canvas.getContext('2d');
+  let W, H;
+
+  function resize(){
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  const colors = [
+    '#ff0000', '#0040ff', '#00ff40', '#ffea00',
+    '#ff005c', '#ff6ec7', '#ff3cac', '#39ff14',
+    '#00ffea', '#00d4ff', '#7b2fff', '#ff9100',
+    '#ff00e5', '#ffffff', '#00ffa3', '#3d5aff'
+  ];
+
+  function heartPoints(count, cx, cy, scale){
+    const pts = [];
+    for(let i=0;i<count;i++){
+      const t = (i/count) * Math.PI * 2;
+      const x = 16*Math.pow(Math.sin(t),3);
+      const y = 13*Math.cos(t) - 5*Math.cos(2*t) - 2*Math.cos(3*t) - Math.cos(4*t);
+      pts.push({x: cx + x*scale, y: cy - y*scale});
+    }
+    return pts;
+  }
+
+  function heartFillPoints(count, cx, cy, scale){
+    const pts = [];
+    let tries = 0;
+    while(pts.length < count && tries < count*20){
+      tries++;
+      const rx = (Math.random()*2 - 1) * 18;
+      const ry = (Math.random()*2 - 1) * 18;
+      const xx = rx, yy = -ry + 2;
+      const val = Math.pow(xx*xx + yy*yy - 1, 3) - xx*xx*yy*yy*yy;
+      if(val <= 0){
+        pts.push({x: cx + rx*scale*0.9, y: cy + ry*scale*0.9});
+      }
+    }
+    return pts;
+  }
+
+  const sizes = {
+    small:  { outline: 90,  fill: 160, scale: 4.5,  particleR: 1.6, life: 65,  rocketR: 2.5 },
+    medium: { outline: 150, fill: 320, scale: 7,    particleR: 2.0, life: 85,  rocketR: 3 },
+    huge:   { outline: 240, fill: 620, scale: 10.5, particleR: 2.4, life: 105, rocketR: 3.6 }
+  };
+
+  const rockets = [];
+  const fireworks = [];
+
+  function spawnRocket(tx, ty){
+    const roll = Math.random();
+    const sizeKey = roll < 0.4 ? 'small' : (roll < 0.75 ? 'medium' : 'huge');
+    const cfg = sizes[sizeKey];
+    const startX = tx + (Math.random()*60 - 30);
+    const startY = H + 10;
+    const dist = startY - ty;
+    // speed scaled so travel time feels like a real rocket ~ 0.9 - 1.4s
+    const duration = 130 + Math.random()*60; // frames, slower ascent for more suspense
+    rockets.push({
+      x: startX, y: startY,
+      tx, ty,
+      startX, startY,
+      frame: 0,
+      duration,
+      cfg,
+      color: colors[Math.floor(Math.random()*colors.length)],
+      trail: []
+    });
+  }
+
+  function boom(x, y, cfg, color){
+    const targetOutline = heartPoints(cfg.outline, x, y, cfg.scale);
+    const targetFill = heartFillPoints(cfg.fill, x, y, cfg.scale);
+    const targets = targetOutline.concat(targetFill);
+
+    const particles = targets.map(pt => ({
+      x: x, y: y,
+      tx: pt.x, ty: pt.y,
+      delay: Math.random()*35,
+      color: colors[Math.floor(Math.random()*colors.length)],
+      r: cfg.particleR * (0.7 + Math.random()*0.6)
+    }));
+
+    fireworks.push({
+      particles,
+      frame: 0,
+      phase: 'form',
+      life: cfg.life
+    });
+  }
+
+  function step(){
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    ctx.fillRect(0,0,W,H);
+
+    // rockets ascending
+    for(let r = rockets.length - 1; r >= 0; r--){
+      const rk = rockets[r];
+      rk.frame++;
+      const t = Math.min(1, rk.frame / rk.duration);
+      // ease-out so it decelerates slightly like gravity fighting thrust
+      const ease = 1 - Math.pow(1-t, 2);
+      rk.x = rk.startX + (rk.tx - rk.startX) * ease;
+      rk.y = rk.startY + (rk.ty - rk.startY) * ease;
+
+      rk.trail.push({x: rk.x, y: rk.y, life: 1});
+      if(rk.trail.length > 18) rk.trail.shift();
+
+      for(const tp of rk.trail){
+        tp.life -= 0.06;
+        if(tp.life <= 0) continue;
+        ctx.globalAlpha = Math.max(0, tp.life);
+        ctx.fillStyle = rk.color;
+        ctx.beginPath();
+        ctx.arc(tp.x, tp.y, rk.cfg.rocketR * 0.6, 0, Math.PI*2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = rk.color;
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(rk.x, rk.y, rk.cfg.rocketR, 0, Math.PI*2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+
+      if(t >= 1){
+        boom(rk.tx, rk.ty, rk.cfg, rk.color);
+        rockets.splice(r, 1);
+      }
+    }
+
+    // fireworks blooming
+    for(let f = fireworks.length - 1; f >= 0; f--){
+      const fw = fireworks[f];
+      fw.frame++;
+
+      if(fw.phase === 'form'){
+        let allSettled = true;
+        for(const p of fw.particles){
+          if(fw.frame < p.delay){ allSettled = false; continue; }
+          const progress = Math.min(1, (fw.frame - p.delay) / 26);
+          if(progress < 1) allSettled = false;
+          const ease = 1 - Math.pow(1-progress, 3);
+          const curX = p.x + (p.tx - p.x) * ease;
+          const curY = p.y + (p.ty - p.y) * ease;
+          ctx.shadowBlur = 8;
+          ctx.shadowColor = p.color;
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(curX, curY, p.r, 0, Math.PI*2);
+          ctx.fill();
+        }
+        ctx.shadowBlur = 0;
+        if(allSettled && fw.frame > 80){
+          fw.phase = 'hold';
+          fw.frame = 0;
+        }
+      } else if(fw.phase === 'hold'){
+        for(const p of fw.particles){
+          const tw = 0.65 + 0.35*Math.sin((fw.frame*0.15) + p.tx);
+          ctx.globalAlpha = tw;
+          ctx.shadowBlur = 6;
+          ctx.shadowColor = p.color;
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(p.tx, p.ty, p.r, 0, Math.PI*2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+        ctx.shadowBlur = 0;
+        if(fw.frame > fw.life){
+          fw.phase = 'fade';
+          fw.frame = 0;
+        }
+      } else if(fw.phase === 'fade'){
+        const alpha = Math.max(0, 1 - fw.frame/40);
+        for(const p of fw.particles){
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(p.tx, p.ty, p.r, 0, Math.PI*2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+        if(fw.frame > 45){
+          fireworks.splice(f, 1);
+        }
+      }
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  canvas.addEventListener('click', (e) => {
+    spawnRocket(e.clientX, e.clientY);
+    const hint = document.getElementById('hint');
+    if(hint){ hint.style.opacity = '0'; }
+  });
+
+  requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
