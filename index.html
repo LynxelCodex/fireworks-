@@ -49,91 +49,20 @@
   resize();
   window.addEventListener('resize', resize);
 
-  /* ══════ Performance caps ══════ */
-  const MAX_FIREWORKS = 10;
-  const MAX_LOOSE_SPARKS = 600;
-  const MAX_TOTAL_PARTICLES = 4000;
-
-  function totalParticleCount(){
-    let n = looseSparks.length;
-    for(let i = 0; i < fireworks.length; i++) n += fireworks[i].particles.length;
-    for(let i = 0; i < rockets.length; i++) n += rockets[i].sparks.length + rockets[i].trail.length;
-    return n;
-  }
-
-  /* ══════ Swap-and-pop helper (O(1) removal) ══════ */
-  function swapPop(arr, i){
-    arr[i] = arr[arr.length - 1];
-    arr.pop();
-  }
-
-  /* ══════ Pre-rendered glow sprites ══════ */
-  const glowSpriteCache = {};
-
-  function getGlowSprite(color, radius){
-    const key = color + '|' + radius;
-    if(glowSpriteCache[key]) return glowSpriteCache[key];
-
-    const size = Math.ceil(radius * 4);
-    const oc = document.createElement('canvas');
-    oc.width = size * 2;
-    oc.height = size * 2;
-    const octx = oc.getContext('2d');
-
-    const grad = octx.createRadialGradient(size, size, 0, size, size, size);
-    grad.addColorStop(0, color);
-    grad.addColorStop(0.3, color);
-    grad.addColorStop(0.6, color.slice(0,7) + '80'); // 50% alpha
-    grad.addColorStop(1, color.slice(0,7) + '00');   // 0% alpha
-    octx.fillStyle = grad;
-    octx.fillRect(0, 0, size * 2, size * 2);
-
-    // limit cache size
-    const keys = Object.keys(glowSpriteCache);
-    if(keys.length > 150){
-      for(let i = 0; i < 50; i++) delete glowSpriteCache[keys[i]];
-    }
-
-    glowSpriteCache[key] = oc;
-    return oc;
-  }
-
-  /* white-hot dot sprite (shared) */
-  const whiteDotSprite = (function(){
-    const s = 12;
-    const oc = document.createElement('canvas');
-    oc.width = s * 2; oc.height = s * 2;
-    const octx = oc.getContext('2d');
-    const grad = octx.createRadialGradient(s, s, 0, s, s, s);
-    grad.addColorStop(0, 'rgba(255,255,255,0.9)');
-    grad.addColorStop(0.4, 'rgba(255,255,255,0.3)');
-    grad.addColorStop(1, 'rgba(255,255,255,0)');
-    octx.fillStyle = grad;
-    octx.fillRect(0, 0, s*2, s*2);
-    return oc;
-  })();
-
   /* ══════ Web Audio — synthesized firework sounds ══════ */
   let audioCtx = null;
-  const noiseBuffers = [];
-  const NOISE_BUFFER_COUNT = 4;
-
   function initAudio(){
     if(audioCtx) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    // Pre-generate noise buffers
-    for(let i = 0; i < NOISE_BUFFER_COUNT; i++){
-      const len = audioCtx.sampleRate * 2; // 2 seconds max
-      const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
-      const data = buf.getChannelData(0);
-      for(let j = 0; j < len; j++) data[j] = Math.random() * 2 - 1;
-      noiseBuffers.push(buf);
-    }
   }
 
-  // Reuse cached noise buffer
-  function getNoiseBuffer(){
-    return noiseBuffers[Math.floor(Math.random() * noiseBuffers.length)];
+  // Create a noise buffer (shared)
+  function getNoiseBuffer(duration){
+    const len = audioCtx.sampleRate * duration;
+    const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
+    const data = buf.getChannelData(0);
+    for(let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    return buf;
   }
 
   // Rocket launch — rising whoosh
@@ -144,7 +73,7 @@
     const now = audioCtx.currentTime;
 
     const noise = audioCtx.createBufferSource();
-    noise.buffer = getNoiseBuffer();
+    noise.buffer = getNoiseBuffer(dur + 0.2);
 
     const filter = audioCtx.createBiquadFilter();
     filter.type = 'bandpass';
@@ -187,7 +116,7 @@
 
     // noise burst
     const noise = audioCtx.createBufferSource();
-    noise.buffer = getNoiseBuffer();
+    noise.buffer = getNoiseBuffer(dur + 0.1);
 
     const filter = audioCtx.createBiquadFilter();
     filter.type = 'lowpass';
@@ -224,7 +153,7 @@
     blue:  ['#00bbff','#00e5ff','#00aaff','#1af0ff','#3df5ff','#0099ff','#00d4ff','#40c4ff','#18ffff','#00b0ff'],
     green: ['#00ff66','#39ff14','#00ff7f','#0fff50','#76ff03','#00ff41','#33ff77','#1aff6e','#66ff00','#00ff88']
   };
-  /* ultra-bright glow color per family */
+  /* ultra-bright glow color per family for shadowColor */
   const neonGlowMap = {
     red:   '#ff003c',
     blue:  '#00e5ff',
@@ -239,7 +168,7 @@
     const pal = colorFamilies[family];
     return pal[Math.floor(Math.random() * pal.length)];
   }
-  function glowColorFn(family){
+  function glowColor(family){
     return neonGlowMap[family] || '#ffffff';
   }
 
@@ -286,9 +215,6 @@
   const trajectoryTypes = ['snake','spiral','wander'];
 
   function spawnRocket(tx, ty){
-    // Throttle: cap simultaneous fireworks
-    if(fireworks.length >= MAX_FIREWORKS && rockets.length >= 5) return;
-
     const roll = Math.random();
     const sizeKey = roll < 0.4 ? 'small' : (roll < 0.75 ? 'medium' : 'huge');
     playLaunch(sizeKey);
@@ -302,18 +228,18 @@
     // trajectory-specific params
     const trajData = {};
     if(traj === 'snake'){
-      trajData.amplitude = 40 + Math.random() * 80;
-      trajData.frequency = 2 + Math.random() * 4;
+      trajData.amplitude = 40 + Math.random() * 80;       // how wide the weave
+      trajData.frequency = 2 + Math.random() * 4;          // how many wiggles
       trajData.phase = Math.random() * Math.PI * 2;
     } else if(traj === 'spiral'){
       trajData.radius = 30 + Math.random() * 60;
       trajData.spins = 1.5 + Math.random() * 3;
-      trajData.dir = Math.random() < 0.5 ? 1 : -1;
+      trajData.dir = Math.random() < 0.5 ? 1 : -1;        // CW or CCW
     } else { // wander
       trajData.wx = startX;
       trajData.wy = startY;
       trajData.vx = (Math.random() - 0.5) * 4;
-      trajData.vy = -(2 + Math.random() * 3);
+      trajData.vy = -(2 + Math.random() * 3);              // mostly upward
       trajData.steerStrength = 0.04 + Math.random() * 0.04;
       trajData.jitter = 0.8 + Math.random() * 0.6;
     }
@@ -336,10 +262,7 @@
   }
 
   function boom(x, y, cfg, family, depth){
-    // Cap check: don't explode if we have too many fireworks
-    if(fireworks.length >= MAX_FIREWORKS) return;
-    if(totalParticleCount() > MAX_TOTAL_PARTICLES) return;
-
+    // find size key name for sound volume
     const sKey = Object.entries(sizes).find(([k,v]) => v === cfg)?.[0] || 'small';
     playBoom(sKey, depth || 0);
     depth = depth || 0;
@@ -355,9 +278,8 @@
       r: cfg.particleR * (0.7 + Math.random()*0.6)
     }));
 
-    // burst sparks — reduced count & capped
-    const sparkBudget = MAX_LOOSE_SPARKS - looseSparks.length;
-    const sparkCount = Math.min(sparkBudget, 25 + Math.floor(Math.random() * 40));
+    // burst sparks that fly outward on explosion
+    const sparkCount = 40 + Math.floor(Math.random() * 80);
     for(let i = 0; i < sparkCount; i++){
       const angle = Math.random() * Math.PI * 2;
       const speed = 2 + Math.random() * 6;
@@ -389,14 +311,12 @@
   function trySpread(fw){
     if(fw.hasSpread) return;
     fw.hasSpread = true;
-    if(fw.depth >= 2) return;
+    if(fw.depth >= 2) return; // cap recursion at 2 levels
 
-    // Reduce spread chance when under load
-    const loadFactor = fireworks.length / MAX_FIREWORKS;
-    const chance = (fw.depth === 0 ? 0.45 : 0.25) * (1 - loadFactor * 0.7);
+    const chance = fw.depth === 0 ? 0.45 : 0.25;
     if(Math.random() > chance) return;
 
-    const count = 2 + Math.floor(Math.random() * 3);
+    const count = 2 + Math.floor(Math.random() * 3); // 2-4 sub-hearts
     const spreadDist = fw.cfg.scale * 22 + 40;
     const smallerKeys = fw.depth === 0 ? ['tiny','small'] : ['tiny'];
     for(let i = 0; i < count; i++){
@@ -406,55 +326,44 @@
       const sy = fw.cy + Math.sin(angle) * dist;
       const sizeKey = smallerKeys[Math.floor(Math.random() * smallerKeys.length)];
       const childFamily = Math.random() < 0.6 ? fw.family : pickFamily();
-      const delay = 15 + Math.floor(Math.random() * 30);
+      const delay = 15 + Math.floor(Math.random() * 30); // staggered timing
       pendingSpreads.push({ x: sx, y: sy, cfg: sizes[sizeKey], family: childFamily, depth: fw.depth + 1, timer: delay });
     }
   }
 
-  /* ══════ Drawing helpers using glow sprites (no shadowBlur) ══════ */
-
-  function drawGlowDot(x, y, r, color, alpha){
-    const spriteR = Math.max(4, Math.ceil(r * 3));
-    const sprite = getGlowSprite(color, spriteR);
-    const drawSize = spriteR * 2;
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(sprite, x - spriteR, y - spriteR, drawSize, drawSize);
-  }
-
-  function drawWhiteDot(x, y, r, alpha){
-    const s = Math.max(2, Math.ceil(r * 2));
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(whiteDotSprite, x - s, y - s, s * 2, s * 2);
-  }
-
   function step(){
-    ctx.globalAlpha = 1;
     ctx.fillStyle = 'rgba(0,0,0,0.22)';
     ctx.fillRect(0,0,W,H);
 
-    // process pending spreads (swap-and-pop)
+    // process pending spreads
     for(let s = pendingSpreads.length - 1; s >= 0; s--){
       pendingSpreads[s].timer--;
       if(pendingSpreads[s].timer <= 0){
         const sp = pendingSpreads[s];
         boom(sp.x, sp.y, sp.cfg, sp.family, sp.depth);
-        swapPop(pendingSpreads, s);
+        pendingSpreads.splice(s, 1);
       }
     }
 
-    // draw loose sparks — NO shadowBlur, use glow sprites
+    // draw loose sparks
     for(let si = looseSparks.length - 1; si >= 0; si--){
       const sp = looseSparks[si];
       sp.x += sp.vx;
       sp.y += sp.vy;
-      sp.vy += 0.06;
-      sp.vx *= 0.99;
+      sp.vy += 0.06;       // gravity
+      sp.vx *= 0.99;       // drag
       sp.life -= sp.decay;
-      if(sp.life <= 0){ swapPop(looseSparks, si); continue; }
-      const a = Math.min(1, sp.life);
-      drawGlowDot(sp.x, sp.y, sp.r * sp.life * 2.5, sp.color, a);
+      if(sp.life <= 0){ looseSparks.splice(si, 1); continue; }
+      ctx.globalAlpha = Math.min(1, sp.life);
+      ctx.shadowBlur = 18;
+      ctx.shadowColor = sp.color;
+      ctx.fillStyle = sp.color;
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, sp.r * sp.life, 0, Math.PI*2);
+      ctx.fill();
     }
     ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
 
     // rockets ascending
     for(let r = rockets.length - 1; r >= 0; r--){
@@ -468,6 +377,7 @@
       const baseY = rk.startY + (rk.ty - rk.startY) * ease;
 
       if(rk.traj === 'snake'){
+        // sinusoidal weave perpendicular to travel direction
         const d = rk.trajData;
         const angle = Math.atan2(rk.ty - rk.startY, rk.tx - rk.startX);
         const perpX = -Math.sin(angle);
@@ -478,29 +388,33 @@
       } else if(rk.traj === 'spiral'){
         const d = rk.trajData;
         const spiralAngle = t * d.spins * Math.PI * 2 * d.dir;
-        const r2 = d.radius * (1 - t * 0.7);
+        const r2 = d.radius * (1 - t * 0.7); // spiral tightens near target
         rk.x = baseX + Math.cos(spiralAngle) * r2;
         rk.y = baseY + Math.sin(spiralAngle) * r2;
       } else { // wander
         const d = rk.trajData;
+        // steer gently toward target
         const dx = rk.tx - d.wx;
         const dy = rk.ty - d.wy;
         const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        // increase steering as we get closer to deadline
         const urgency = Math.pow(t, 2) * 2 + d.steerStrength;
         d.vx += (dx / dist) * urgency + (Math.random() - 0.5) * d.jitter;
         d.vy += (dy / dist) * urgency + (Math.random() - 0.5) * d.jitter;
+        // dampen a bit
         const speed = Math.sqrt(d.vx*d.vx + d.vy*d.vy);
         const maxSpd = 5 + t * 4;
         if(speed > maxSpd){ d.vx *= maxSpd/speed; d.vy *= maxSpd/speed; }
         d.wx += d.vx;
         d.wy += d.vy;
+        // near the end, blend toward the target so we always arrive
         const blend = Math.pow(Math.max(0, (t - 0.7) / 0.3), 2);
         rk.x = d.wx * (1 - blend) + rk.tx * blend;
         rk.y = d.wy * (1 - blend) + rk.ty * blend;
       }
 
-      // emit sparks (reduced frequency)
-      if(Math.random() < 0.3){
+      // emit sparks
+      if(Math.random() < 0.4){
         rk.sparks.push({
           x: rk.x, y: rk.y,
           vx: (Math.random()-0.5)*3,
@@ -509,44 +423,60 @@
           color: rk.color
         });
       }
-      // update & draw rocket sparks — glow sprites, no shadowBlur
+      // update & draw sparks
       for(let si = rk.sparks.length - 1; si >= 0; si--){
         const sp = rk.sparks[si];
         sp.x += sp.vx; sp.y += sp.vy;
-        sp.vy += 0.05;
+        sp.vy += 0.05; // gravity
         sp.life -= 0.05;
-        if(sp.life <= 0){ swapPop(rk.sparks, si); continue; }
-        drawGlowDot(sp.x, sp.y, 3, sp.color, sp.life * 0.7);
+        if(sp.life <= 0){ rk.sparks.splice(si, 1); continue; }
+        ctx.globalAlpha = sp.life * 0.7;
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = sp.color;
+        ctx.fillStyle = sp.color;
+        ctx.beginPath();
+        ctx.arc(sp.x, sp.y, 1.2, 0, Math.PI*2);
+        ctx.fill();
       }
+      ctx.shadowBlur = 0;
 
-      // trail — glow sprites
       rk.trail.push({x: rk.x, y: rk.y, life: 1});
       if(rk.trail.length > 30) rk.trail.shift();
 
       for(const tp of rk.trail){
         tp.life -= 0.04;
         if(tp.life <= 0) continue;
-        drawGlowDot(tp.x, tp.y, rk.cfg.rocketR * 2, rk.color, Math.max(0, tp.life));
+        ctx.globalAlpha = Math.max(0, tp.life);
+        ctx.shadowBlur = 18;
+        ctx.shadowColor = rk.color;
+        ctx.fillStyle = rk.color;
+        ctx.beginPath();
+        ctx.arc(tp.x, tp.y, rk.cfg.rocketR * 0.7, 0, Math.PI*2);
+        ctx.fill();
       }
       ctx.globalAlpha = 1;
 
-      // neon head glow — use glow sprite instead of shadowBlur
-      const glowC = glowColorFn(rk.family);
-      drawGlowDot(rk.x, rk.y, rk.cfg.rocketR * 5, glowC, 0.9);
-      // bright core
-      ctx.globalAlpha = 1;
+      // neon head glow — double pass for intense bloom
+      ctx.shadowBlur = 35;
+      ctx.shadowColor = glowColor(rk.family);
+      ctx.fillStyle = rk.color;
+      ctx.beginPath();
+      ctx.arc(rk.x, rk.y, rk.cfg.rocketR * 1.3, 0, Math.PI*2);
+      ctx.fill();
+      ctx.shadowBlur = 14;
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
       ctx.arc(rk.x, rk.y, rk.cfg.rocketR, 0, Math.PI*2);
       ctx.fill();
+      ctx.shadowBlur = 0;
 
       if(t >= 1){
         boom(rk.tx, rk.ty, rk.cfg, rk.family, 0);
-        swapPop(rockets, r);
+        rockets.splice(r, 1);
       }
     }
 
-    // fireworks blooming — glow sprites, no shadowBlur
+    // fireworks blooming
     for(let f = fireworks.length - 1; f >= 0; f--){
       const fw = fireworks[f];
       fw.frame++;
@@ -557,34 +487,61 @@
           if(fw.frame < p.delay){ allSettled = false; continue; }
           const progress = Math.min(1, (fw.frame - p.delay) / 26);
           if(progress < 1) allSettled = false;
-          const easev = 1 - Math.pow(1-progress, 3);
-          const curX = p.x + (p.tx - p.x) * easev;
-          const curY = p.y + (p.ty - p.y) * easev;
-          // glow sprite replaces shadowBlur + arc
-          drawGlowDot(curX, curY, p.r * 3.5, p.color, 1);
+          const ease = 1 - Math.pow(1-progress, 3);
+          const curX = p.x + (p.tx - p.x) * ease;
+          const curY = p.y + (p.ty - p.y) * ease;
+          // outer neon glow
+          ctx.shadowBlur = 24;
+          ctx.shadowColor = p.color;
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(curX, curY, p.r * 1.2, 0, Math.PI*2);
+          ctx.fill();
           // bright core
-          drawWhiteDot(curX, curY, p.r * 0.6, 0.45);
+          ctx.shadowBlur = 8;
+          ctx.fillStyle = '#ffffff';
+          ctx.globalAlpha = 0.4;
+          ctx.beginPath();
+          ctx.arc(curX, curY, p.r * 0.5, 0, Math.PI*2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
         }
-        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
         if(allSettled && fw.frame > 80){
           fw.phase = 'hold';
           fw.frame = 0;
         }
       } else if(fw.phase === 'hold'){
-        const glow = glowColorFn(fw.family);
-        const sparkBudget = MAX_LOOSE_SPARKS - looseSparks.length;
-
+        const glow = glowColor(fw.family);
         for(const p of fw.particles){
           const tw = 0.65 + 0.35*Math.sin((fw.frame*0.15) + p.tx);
-          // wide soft neon bloom — glow sprite
-          drawGlowDot(p.tx, p.ty, p.r * 5, glow, tw * 0.5);
+          // wide soft neon bloom
+          ctx.globalAlpha = tw * 0.5;
+          ctx.shadowBlur = 40;
+          ctx.shadowColor = glow;
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(p.tx, p.ty, p.r * 2, 0, Math.PI*2);
+          ctx.fill();
           // bright core particle
-          drawGlowDot(p.tx, p.ty, p.r * 2.5, p.color, tw);
+          ctx.globalAlpha = tw;
+          ctx.shadowBlur = 16;
+          ctx.shadowColor = p.color;
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(p.tx, p.ty, p.r, 0, Math.PI*2);
+          ctx.fill();
           // white-hot center
-          drawWhiteDot(p.tx, p.ty, p.r * 0.5, tw * 0.35);
+          ctx.globalAlpha = tw * 0.35;
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = '#ffffff';
+          ctx.beginPath();
+          ctx.arc(p.tx, p.ty, p.r * 0.4, 0, Math.PI*2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
 
-          // shed glitter sparks — reduced rate and capped
-          if(sparkBudget > 0 && Math.random() < 0.015){
+          // shed glitter sparks from heart particles
+          if(Math.random() < 0.03){
             looseSparks.push({
               x: p.tx, y: p.ty,
               vx: (Math.random()-0.5)*2,
@@ -596,22 +553,36 @@
             });
           }
         }
-        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
         if(fw.frame > fw.life){
           fw.phase = 'fade';
           fw.frame = 0;
+          // try spreading when the heart starts fading
           trySpread(fw);
         }
       } else if(fw.phase === 'fade'){
         const alpha = Math.max(0, 1 - fw.frame/40);
-        const glow = glowColorFn(fw.family);
+        const glow = glowColor(fw.family);
         for(const p of fw.particles){
-          drawGlowDot(p.tx, p.ty, p.r * 4.5, glow, alpha * 0.4);
-          drawGlowDot(p.tx, p.ty, p.r * 2.5, p.color, alpha);
+          ctx.globalAlpha = alpha * 0.4;
+          ctx.shadowBlur = 30;
+          ctx.shadowColor = glow;
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(p.tx, p.ty, p.r * 1.8, 0, Math.PI*2);
+          ctx.fill();
+          ctx.globalAlpha = alpha;
+          ctx.shadowBlur = 10;
+          ctx.shadowColor = p.color;
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(p.tx, p.ty, p.r, 0, Math.PI*2);
+          ctx.fill();
+          ctx.globalAlpha = 1;
         }
-        ctx.globalAlpha = 1;
+        ctx.shadowBlur = 0;
         if(fw.frame > 45){
-          swapPop(fireworks, f);
+          fireworks.splice(f, 1);
         }
       }
     }
