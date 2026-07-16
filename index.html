@@ -48,7 +48,6 @@
   }
   resize();
   window.addEventListener('resize', resize);
-  initClouds();
 
   /* ══════ Web Audio — synthesized firework sounds ══════ */
   let audioCtx = null;
@@ -1034,6 +1033,7 @@
   });
 
   requestAnimationFrame(step);
+  initClouds();
 })();
 </script>
 </body>
